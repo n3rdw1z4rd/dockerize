@@ -1,0 +1,7 @@
+{
+  "name": "@demo/Static App",
+  "private": true,
+  "scripts": { "build": "vite build" },
+  "devDependencies": { "vite": "^7.0.0" },
+  "dockerize": { "port": 5174, "volumes": ["data:/data"] }
+}

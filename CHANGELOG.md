@@ -1,0 +1,19 @@
+# Changelog
+
+## 1.2.0
+
+- `install`, `self-update` and `uninstall` commands. Install with
+  `curl -fsSL https://raw.githubusercontent.com/n3rdw1z4rd/dockerize/main/dockerize | bash -s -- install`
+  (to `~/.local/bin`, or `--to DIR`, any version with `--ref`).
+- Tests (`tests/smoke.sh`, `tests/docker.sh`) and CI with shellcheck.
+
+## 1.1.0
+
+- Volumes: `-v name:/path` (a Docker volume called `<project>-name`) or `-v /host/path:/path`, and `"volumes"` in
+  package.json. `config` and `deploy` show them; `clean` keeps them.
+
+## 1.0.0
+
+- `deploy`, `update`, `start`, `stop`, `restart`, `logs`, `status`, `clean`, `config`, `eject`.
+- Static mode (nginx) and node mode, auto-detected; the project's own Dockerfile when it has one.
+- Settings in package.json under `"dockerize"`.

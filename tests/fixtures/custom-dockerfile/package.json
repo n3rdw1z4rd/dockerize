@@ -1,0 +1,6 @@
+{
+  "name": "custom",
+  "private": true,
+  "scripts": { "build": "echo build" },
+  "dockerize": { "port": 6666 }
+}

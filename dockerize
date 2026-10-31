@@ -1,0 +1,607 @@
+#!/usr/bin/env bash
+#
+# dockerize — build and run any Node project as a Docker container.
+#
+#   static mode  Vite (and other front-end) apps: builds the project, then
+#                serves the build output with nginx.
+#   node mode    Server apps (Express, Fastify, Next, …): runs the build script
+#                if there is one, then `start`.
+#
+# Run it from a project folder on the server that hosts the app. Everything it
+# creates is named and labelled after the project, and it never touches
+# containers or images that belong to anything else.
+#
+set -euo pipefail
+
+VERSION="1.2.0"
+REPO_RAW="https://raw.githubusercontent.com/n3rdw1z4rd/dockerize"
+LABEL_KEY="dockerize.app"
+
+if [[ -t 1 ]]; then
+  BOLD=$'\e[1m' RED=$'\e[31m' GRN=$'\e[32m' YEL=$'\e[33m' CYN=$'\e[36m' RST=$'\e[0m'
+else
+  BOLD='' RED='' GRN='' YEL='' CYN='' RST=''
+fi
+info() { printf '%s==>%s %s\n' "$CYN" "$RST" "$*"; }
+ok()   { printf '%s✓%s %s\n' "$GRN" "$RST" "$*"; }
+warn() { printf '%swarning:%s %s\n' "$YEL" "$RST" "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+${BOLD}dockerize${RST} ${VERSION} — build and run any Node project as a Docker container
+
+${BOLD}Usage:${RST} dockerize <command> [options]
+
+${BOLD}Commands:${RST}
+  deploy     Build the image and (re)start the container
+  update     Same as deploy: rebuild from the code in this folder and restart
+  start      Start the container from the last built image
+  stop       Stop and remove the container (the image is kept)
+  restart    Restart the running container
+  logs       Follow the container's logs
+  status     Show this project's container and images
+  clean      Remove this project's container and all of its images
+  config     Show the settings dockerize worked out for this project
+  eject      Write the generated Dockerfile (and nginx.conf) into the project
+             so you can customise them; dockerize uses them from then on
+
+  install      Install dockerize for this user (default: ~/.local/bin)
+  self-update  Replace this dockerize with the latest version
+  uninstall    Remove the installed dockerize
+
+${BOLD}Install / update options:${RST}
+      --to DIR          Where to install (default: \$DOCKERIZE_INSTALL_DIR
+                        or ~/.local/bin)
+      --ref REF         Branch or tag to install from (default: main)
+
+${BOLD}Options:${RST}
+  -C, --dir PATH        Project folder (default: current folder)
+  -n, --name NAME       Container/image name (default: package.json "name")
+  -p, --port PORT       Host port to publish (default: 5173)
+  -m, --mode MODE       static | node (default: auto-detect)
+      --app-port PORT   Port a node-mode app listens on in the container (default: 3000)
+      --out-dir DIR     Build output folder in static mode (default: dist)
+      --node IMAGE      Node base image (default: node:lts-alpine)
+      --network NET     Attach the container to this Docker network
+      --bind ADDR       Host address to publish on (default: all interfaces)
+      --no-publish      Don't publish a host port (use with --network)
+  -v, --volume SPEC     Mount a volume: NAME:/path (a Docker volume called
+                        <project>-NAME) or /host/path:/path; repeatable
+  -h, --help            Show this help
+
+Settings can also go in package.json so you don't repeat flags:
+
+  "dockerize": { "port": 5174, "mode": "static", "assets": ["assets"] }
+
+  "dockerize": { "volumes": ["data:/data"] }
+
+Keys: name, port, mode, appPort, outDir, node, network, bind, publish,
+assets, containerPort, volumes. Command-line options beat package.json, which
+beats the defaults; volumes from the command line are added to package.json's.
+Named volumes survive deploy, update and clean.
+EOF
+}
+
+# ---------------------------------------------------------------- arguments --
+
+CMD="${1:-}"
+case $CMD in
+  "" | -h | --help | help) usage; exit 0 ;;
+  -v | --version | version) echo "$VERSION"; exit 0 ;;
+esac
+shift
+
+# ------------------------------------------------------- install / update --
+#
+# These work without a project folder, and when the script is piped straight
+# from curl (bash -s -- install), in which case it downloads itself.
+
+fetch() { # fetch <url> <file>
+  if have curl; then curl -fsSL "$1" -o "$2"
+  elif have wget; then wget -qO "$2" "$1"
+  else die "need curl or wget to download"
+  fi
+}
+
+# the file this script was run from, if it was run from a file
+self_path() {
+  local s="${BASH_SOURCE[0]:-}"
+  if [[ -n $s && -f $s && $s != /dev/* && $s != /proc/* ]]; then
+    readlink -f "$s" 2>/dev/null || printf '%s' "$s"
+  fi
+}
+
+# get_copy <ref> <file>: a copy of dockerize at <ref>, checked before use
+get_copy() {
+  info "Downloading dockerize ($1)"
+  fetch "$REPO_RAW/$1/dockerize" "$2" || die "download failed: $REPO_RAW/$1/dockerize"
+  head -n1 "$2" | grep -q bash || die "that download isn't dockerize"
+  bash -n "$2" || die "the downloaded script has syntax errors; not installing it"
+}
+
+on_path() { case ":$PATH:" in *":$1:"*) return 0 ;; *) return 1 ;; esac; }
+
+case $CMD in
+  install | self-update | uninstall)
+    INSTALL_DIR="${DOCKERIZE_INSTALL_DIR:-$HOME/.local/bin}" REF=main
+    while (($#)); do
+      case $1 in
+        --to)  [[ -n ${2:-} ]] || die "--to needs a folder"; INSTALL_DIR=$2; shift 2 ;;
+        --ref) [[ -n ${2:-} ]] || die "--ref needs a branch or tag"; REF=$2; shift 2 ;;
+        *) die "unknown option for $CMD: $1" ;;
+      esac
+    done
+    TMP="$(mktemp -t dockerize.XXXXXX)"
+    trap 'rm -f "$TMP"' EXIT
+
+    case $CMD in
+      install)
+        DEST="$INSTALL_DIR/dockerize"
+        SELF="$(self_path)"
+        # installing the file you're running (unless you asked for a particular version), else download one
+        if [[ -n $SELF && $REF == main ]]; then cp "$SELF" "$TMP"; else get_copy "$REF" "$TMP"; fi
+        mkdir -p "$INSTALL_DIR"
+        chmod +x "$TMP"
+        mv "$TMP" "$DEST"
+        ok "installed dockerize $(bash "$DEST" version) to $DEST"
+        if ! on_path "$INSTALL_DIR"; then
+          warn "$INSTALL_DIR isn't on your PATH. Add this to ~/.bashrc (or ~/.zshrc) and open a new shell:"
+          echo "   export PATH=\"$INSTALL_DIR:\$PATH\""
+        fi
+        ;;
+      self-update)
+        DEST="$(self_path)"
+        [[ -n $DEST ]] || DEST="$(command -v dockerize || true)"
+        [[ -n $DEST && -f $DEST ]] || die "can't find the installed dockerize; use: dockerize install"
+        [[ -w $DEST ]] || die "can't write $DEST (try with sudo, or reinstall to ~/.local/bin)"
+        get_copy "$REF" "$TMP"
+        NEW="$(bash "$TMP" version)"
+        if [[ $NEW == "$VERSION" && $REF == main ]]; then ok "already up to date ($VERSION)"; exit 0; fi
+        chmod +x "$TMP"
+        mv "$TMP" "$DEST"
+        ok "updated $DEST: $VERSION → $NEW"
+        ;;
+      uninstall)
+        DEST="$INSTALL_DIR/dockerize"
+        [[ -f $DEST ]] || die "no dockerize in $INSTALL_DIR"
+        grep -q 'dockerize' "$DEST" || die "$DEST doesn't look like dockerize; leaving it alone"
+        rm -f "$DEST"
+        ok "removed $DEST (your containers, images and volumes are untouched)"
+        ;;
+    esac
+    exit 0
+    ;;
+esac
+
+OPT_DIR="." OPT_NAME="" OPT_PORT="" OPT_MODE="" OPT_APP_PORT="" OPT_OUT_DIR=""
+OPT_NODE="" OPT_NETWORK="" OPT_BIND="" OPT_PUBLISH=""
+OPT_VOLUMES=()
+
+need() { [[ $# -ge 2 && -n $2 ]] || die "$1 needs a value"; }
+while (($#)); do
+  case $1 in
+    -C | --dir)    need "$@"; OPT_DIR=$2; shift 2 ;;
+    -n | --name)   need "$@"; OPT_NAME=$2; shift 2 ;;
+    -p | --port)   need "$@"; OPT_PORT=$2; shift 2 ;;
+    -m | --mode)   need "$@"; OPT_MODE=$2; shift 2 ;;
+    --app-port)    need "$@"; OPT_APP_PORT=$2; shift 2 ;;
+    --out-dir)     need "$@"; OPT_OUT_DIR=$2; shift 2 ;;
+    --node)        need "$@"; OPT_NODE=$2; shift 2 ;;
+    --network)     need "$@"; OPT_NETWORK=$2; shift 2 ;;
+    --bind)        need "$@"; OPT_BIND=$2; shift 2 ;;
+    --no-publish)  OPT_PUBLISH=false; shift ;;
+    -v | --volume) need "$@"; OPT_VOLUMES+=("$2"); shift 2 ;;
+    -h | --help)   usage; exit 0 ;;
+    *) die "unknown option: $1 (see dockerize --help)" ;;
+  esac
+done
+
+case $CMD in
+  deploy | update | start | stop | restart | logs | status | clean | config | eject) ;;
+  *) die "unknown command: $CMD (see dockerize --help)" ;;
+esac
+
+# ------------------------------------------------------------ package.json --
+
+[[ -d $OPT_DIR ]] || die "no such folder: $OPT_DIR"
+PROJECT="$(cd "$OPT_DIR" && pwd)"
+PKG="$PROJECT/package.json"
+[[ -f $PKG ]] || die "no package.json in $PROJECT"
+
+if have node; then JSON=node
+elif have jq; then JSON=jq
+else die "need node or jq to read package.json"
+fi
+
+# pkg <dotted.path> — print a package.json value ('' if missing).
+# Arrays print one item per line.
+pkg() {
+  if [[ $JSON == node ]]; then
+    node -e '
+      let v = require(process.argv[1]);
+      for (const k of process.argv[2].split(".")) v = v == null ? undefined : v[k];
+      if (v == null) process.exit(0);
+      if (Array.isArray(v)) v.forEach(x => console.log(String(x)));
+      else console.log(typeof v === "object" ? JSON.stringify(v) : String(v));
+    ' "$PKG" "$1"
+  else
+    jq -r --arg p "$1" '
+      getpath($p | split(".")) |
+      if . == null then empty
+      elif type == "array" then .[] | tostring
+      elif type == "object" then tojson
+      else tostring end' "$PKG"
+  fi
+}
+
+# setting <cli value> <"dockerize" key in package.json> <default>
+setting() {
+  local v=$1
+  [[ -n $v ]] || v="$(pkg "dockerize.$2")"
+  [[ -n $v ]] || v=$3
+  printf '%s' "$v"
+}
+
+has_dep()    { [[ -n "$(pkg "dependencies.$1")$(pkg "devDependencies.$1")" ]]; }
+has_script() { [[ -n "$(pkg "scripts.$1")" ]]; }
+
+# ------------------------------------------------------------------ settings --
+
+# Worked out from package.json and the command-line options.
+load_settings() {
+  RAW_NAME="$(setting "$OPT_NAME" name "")"
+  [[ -n $RAW_NAME ]] || RAW_NAME="$(pkg name)"
+  [[ -n $RAW_NAME ]] || RAW_NAME="$(basename "$PROJECT")"
+  # Docker names: lowercase, no @ or /, must start and end with a letter or digit.
+  NAME="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' |
+    sed -E 's#^@##; s#/#-#g; s#[^a-z0-9_.-]+#-#g; s#^[^a-z0-9]+##; s#[^a-z0-9]+$##')"
+  [[ -n $NAME ]] || die "can't make a valid container name from \"$RAW_NAME\"; use --name"
+  IMAGE="$NAME:latest"
+
+  MODE="$(setting "$OPT_MODE" mode "")"
+  if [[ -z $MODE ]]; then
+    START_SCRIPT="$(pkg scripts.start)"
+    if [[ -n $START_SCRIPT && $START_SCRIPT != *vite* ]]; then MODE=node
+    elif has_dep vite || has_script build; then MODE=static
+    else die "can't tell how to run this project; use --mode static or --mode node"
+    fi
+  fi
+  [[ $MODE == static || $MODE == node ]] || die "mode must be static or node, not \"$MODE\""
+
+  PORT="$(setting "$OPT_PORT" port 5173)"
+  APP_PORT="$(setting "$OPT_APP_PORT" appPort 3000)"
+  OUT_DIR="$(setting "$OPT_OUT_DIR" outDir dist)"
+  OUT_DIR="${OUT_DIR#./}"; OUT_DIR="${OUT_DIR%/}"
+  NODE_IMAGE="$(setting "$OPT_NODE" node node:lts-alpine)"
+  NETWORK="$(setting "$OPT_NETWORK" network "")"
+  BIND="$(setting "$OPT_BIND" bind "")"
+  PUBLISH="$(setting "$OPT_PUBLISH" publish true)"
+
+  [[ $PORT =~ ^[0-9]+$ ]] || die "port must be a number, not \"$PORT\""
+  [[ $APP_PORT =~ ^[0-9]+$ ]] || die "appPort must be a number, not \"$APP_PORT\""
+  [[ $PUBLISH == true || $PUBLISH == false ]] || die "publish must be true or false"
+  if [[ $PUBLISH == false && -z $NETWORK ]]; then
+    warn "no published port and no network: nothing will be able to reach the container"
+  fi
+
+  # Extra static folders copied next to the build output (e.g. assets/ of PNGs).
+  ASSETS=()
+  if [[ $MODE == static ]]; then
+    mapfile -t raw_assets < <(pkg dockerize.assets)
+    if ((${#raw_assets[@]} == 0)) && [[ -d $PROJECT/assets ]]; then raw_assets=(assets); fi
+    for a in "${raw_assets[@]}"; do
+      a="${a#./}"; a="${a%/}"
+      if [[ -d $PROJECT/$a ]]; then ASSETS+=("$a"); else warn "assets folder \"$a\" not found, skipping"; fi
+    done
+  fi
+
+  # Volumes: "name:/path" becomes a Docker volume named <project>-name (so it's
+  # clearly this project's); "/host/path:/path" is a bind mount, used as is.
+  VOLUMES=()
+  mapfile -t raw_volumes < <(pkg dockerize.volumes)
+  for v in "${raw_volumes[@]}" "${OPT_VOLUMES[@]}"; do
+    [[ -n $v ]] || continue
+    [[ $v == *:/* ]] || die "volume must look like name:/path or /host/path:/path, not \"$v\""
+    local src=${v%%:*} rest=${v#*:}
+    if [[ $src == /* || $src == .* ]]; then VOLUMES+=("$v")
+    else
+      [[ $src =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || die "bad volume name \"$src\""
+      VOLUMES+=("$NAME-$src:$rest")
+    fi
+  done
+
+  CUSTOM_DOCKERFILE=false
+  [[ -f $PROJECT/Dockerfile ]] && CUSTOM_DOCKERFILE=true
+
+  # Port the app listens on inside the container.
+  if $CUSTOM_DOCKERFILE; then
+    CPORT="$(pkg dockerize.containerPort)"
+    [[ -n $CPORT ]] || CPORT="$(awk 'toupper($1) == "EXPOSE" { sub(/\/.*/, "", $2); p = $2 } END { print p }' "$PROJECT/Dockerfile")"
+  fi
+  if [[ -z ${CPORT:-} ]]; then
+    if [[ $MODE == static ]]; then CPORT=80; else CPORT=$APP_PORT; fi
+  fi
+
+  # Package manager, and the files the install step needs.
+  EARLY_FILES=(package.json)
+  if [[ -f $PROJECT/pnpm-lock.yaml ]]; then
+    PM=pnpm; EARLY_FILES+=(pnpm-lock.yaml)
+    INSTALL="npm install -g corepack && corepack enable && pnpm install --frozen-lockfile"
+  elif [[ -f $PROJECT/yarn.lock ]]; then
+    PM=yarn; EARLY_FILES+=(yarn.lock)
+    INSTALL="npm install -g corepack && corepack enable && yarn install"
+  elif [[ -f $PROJECT/package-lock.json ]]; then
+    PM=npm; EARLY_FILES+=(package-lock.json); INSTALL="npm ci"
+  elif [[ -f $PROJECT/npm-shrinkwrap.json ]]; then
+    PM=npm; EARLY_FILES+=(npm-shrinkwrap.json); INSTALL="npm ci"
+  else
+    PM=npm; INSTALL="npm install"
+  fi
+  for f in .npmrc .yarnrc .yarnrc.yml pnpm-workspace.yaml .pnpmfile.cjs; do
+    if [[ -f $PROJECT/$f ]]; then EARLY_FILES+=("$f"); fi
+  done
+  YARN_DIR_LINE=""
+  if [[ -d $PROJECT/.yarn ]]; then YARN_DIR_LINE="COPY .yarn ./.yarn"; fi
+
+  if [[ $MODE == static ]] && ! $CUSTOM_DOCKERFILE && ! has_script build; then
+    die "static mode needs a \"build\" script in package.json"
+  fi
+}
+load_settings
+
+# ---------------------------------------------------------------- generators --
+
+gen_dockerfile() { # gen_dockerfile <path of nginx.conf inside the build context>
+  local conf=$1 a
+  echo "# Generated by dockerize $VERSION"
+  if [[ $MODE == static ]]; then
+    cat <<EOF
+FROM $NODE_IMAGE AS build
+LABEL $LABEL_KEY=$NAME
+WORKDIR /app
+COPY ${EARLY_FILES[*]} ./
+$YARN_DIR_LINE
+RUN $INSTALL
+COPY . .
+RUN $PM run build
+
+FROM nginx:alpine
+LABEL $LABEL_KEY=$NAME
+COPY $conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/$OUT_DIR/ /usr/share/nginx/html/
+EOF
+    for a in "${ASSETS[@]}"; do echo "COPY $a/ /usr/share/nginx/html/$a/"; done
+    echo "EXPOSE 80"
+  else
+    local build_line=""
+    if has_script build; then build_line="RUN $PM run build"; fi
+    cat <<EOF
+FROM $NODE_IMAGE
+LABEL $LABEL_KEY=$NAME
+WORKDIR /app
+COPY ${EARLY_FILES[*]} ./
+$YARN_DIR_LINE
+RUN $INSTALL
+COPY . .
+$build_line
+ENV NODE_ENV=production PORT=$APP_PORT
+EXPOSE $APP_PORT
+CMD ["$PM", "start"]
+EOF
+  fi
+}
+
+gen_nginx_conf() {
+  cat <<'EOF'
+# Generated by dockerize
+server {
+  listen 80;
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+
+  # Single-page app: unknown paths fall back to index.html
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  # Always re-check index.html so new deploys are picked up immediately
+  location = /index.html {
+    add_header Cache-Control "no-cache";
+  }
+
+  # Vite's hashed JS/CSS never change under the same name: cache for a year
+  location ~* ^/assets/.+\.(js|css)$ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    try_files $uri =404;
+  }
+
+  # Images keep their names when edited: cache, but re-check each load
+  location ~* \.(png|jpe?g|gif|webp|avif|svg|ico)$ {
+    add_header Cache-Control "no-cache";
+    try_files $uri =404;
+  }
+}
+EOF
+}
+
+gen_dockerignore() {
+  printf '%s\n' node_modules .git "$OUT_DIR" Dockerfile .dockerignore
+}
+
+# -------------------------------------------------------------------- docker --
+
+preflight() {
+  have docker || die "docker is not installed"
+  docker info >/dev/null 2>&1 || die "can't reach the Docker daemon (is it running? are you in the docker group?)"
+  if [[ -n $NETWORK ]] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    die "Docker network \"$NETWORK\" doesn't exist (see: docker network ls)"
+  fi
+}
+
+container_exists() { [[ -n "$(docker ps -aq --filter "name=^${NAME}\$")" ]]; }
+image_exists()     { docker image inspect "$IMAGE" >/dev/null 2>&1; }
+
+port_check() {
+  [[ $PUBLISH == true ]] || return 0
+  local users
+  users="$(docker ps --filter "publish=$PORT" --format '{{.Names}}' | grep -vx "$NAME" || true)"
+  [[ -z $users ]] || die "port $PORT is already used by container \"$users\"; choose another with --port or \"dockerize\": { \"port\": … }"
+  if have ss && [[ -z "$(docker ps -q --filter "name=^${NAME}\$" --filter "publish=$PORT")" ]]; then
+    [[ -z "$(ss -Hltn "sport = :$PORT")" ]] || die "port $PORT is already in use on this server"
+  fi
+}
+
+STAGE=""
+cleanup() { if [[ -n $STAGE ]]; then rm -rf "$STAGE"; fi; }
+trap cleanup EXIT
+
+build_image() {
+  if $CUSTOM_DOCKERFILE; then
+    info "Building $IMAGE from the project's Dockerfile"
+    docker build --label "$LABEL_KEY=$NAME" -t "$IMAGE" "$PROJECT"
+  else
+    info "Building $IMAGE ($MODE mode)"
+    # Build from a clean copy so nothing needs to be added to the project.
+    STAGE="$(mktemp -d -t dockerize.XXXXXX)"
+    local ex=(--exclude=node_modules --exclude=./.git --exclude=./.dockerize)
+    if [[ $MODE == static ]]; then ex+=("--exclude=./$OUT_DIR"); fi
+    tar -C "$PROJECT" "${ex[@]}" -cf - . | tar -C "$STAGE" -xf -
+    mkdir -p "$STAGE/.dockerize"
+    gen_dockerfile .dockerize/nginx.conf >"$STAGE/.dockerize/Dockerfile"
+    if [[ $MODE == static ]]; then gen_nginx_conf >"$STAGE/.dockerize/nginx.conf"; fi
+    docker build --label "$LABEL_KEY=$NAME" -f "$STAGE/.dockerize/Dockerfile" -t "$IMAGE" "$STAGE"
+  fi
+}
+
+remove_container() {
+  if container_exists; then docker rm -f "$NAME" >/dev/null; fi
+}
+
+start_container() {
+  local args=(-d --name "$NAME" --restart unless-stopped --label "$LABEL_KEY=$NAME")
+  if [[ $PUBLISH == true ]]; then
+    if [[ -n $BIND ]]; then args+=(-p "$BIND:$PORT:$CPORT"); else args+=(-p "$PORT:$CPORT"); fi
+  fi
+  if [[ -n $NETWORK ]]; then args+=(--network "$NETWORK"); fi
+  local v
+  for v in "${VOLUMES[@]}"; do args+=(-v "$v"); done
+
+  info "Starting container $NAME"
+  docker run "${args[@]}" "$IMAGE" >/dev/null
+
+  # Make sure it stays up rather than crashing straight away.
+  sleep 3
+  local state
+  state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$NAME" 2>/dev/null || echo "missing 0")"
+  if [[ $state != "running 0" ]]; then
+    warn "container isn't staying up (state: $state). Last log lines:"
+    docker logs --tail 30 "$NAME" >&2 || true
+    die "start failed"
+  fi
+
+  ok "$NAME is running"
+  if [[ $PUBLISH == true ]]; then echo "   http://${BIND:-localhost}:$PORT  →  container port $CPORT"; fi
+  if [[ -n $NETWORK ]]; then echo "   on network $NETWORK as  http://$NAME:$CPORT"; fi
+  for v in "${VOLUMES[@]}"; do echo "   volume  $v"; done
+}
+
+prune_old_images() {
+  docker image prune -f --filter "label=$LABEL_KEY=$NAME" >/dev/null
+}
+
+# ------------------------------------------------------------------ commands --
+
+case $CMD in
+  deploy | update)
+    preflight
+    port_check
+    build_image
+    remove_container
+    start_container
+    prune_old_images
+    ;;
+
+  start)
+    preflight
+    image_exists || die "no image yet; run: dockerize deploy"
+    port_check
+    remove_container
+    start_container
+    ;;
+
+  stop)
+    preflight
+    if container_exists; then remove_container; ok "stopped and removed $NAME"; else ok "$NAME isn't running"; fi
+    ;;
+
+  restart)
+    preflight
+    container_exists || die "no container yet; run: dockerize deploy"
+    docker restart "$NAME" >/dev/null
+    ok "restarted $NAME"
+    ;;
+
+  logs)
+    preflight
+    container_exists || die "no container named $NAME"
+    exec docker logs -f --tail 100 "$NAME"
+    ;;
+
+  status)
+    preflight
+    echo "${BOLD}Container${RST}"
+    docker ps -a --filter "name=^${NAME}\$" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    echo
+    echo "${BOLD}Images${RST}"
+    docker images --filter "label=$LABEL_KEY=$NAME" --format 'table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}'
+    ;;
+
+  clean)
+    preflight
+    remove_container
+    docker image prune -a -f --filter "label=$LABEL_KEY=$NAME" >/dev/null
+    ok "removed $NAME's container and images"
+    if ((${#VOLUMES[@]})); then echo "   volumes kept (remove by hand if you mean it): ${VOLUMES[*]%%:*}"; fi
+    ;;
+
+  config)
+    cat <<EOF
+project      $PROJECT
+name         $NAME
+image        $IMAGE
+mode         $MODE
+dockerfile   $($CUSTOM_DOCKERFILE && echo "project's own" || echo generated)
+package mgr  $PM
+host port    $([[ $PUBLISH == true ]] && echo "${BIND:+$BIND:}$PORT" || echo "not published")
+container    port $CPORT
+network      ${NETWORK:-default}
+volumes      ${VOLUMES[*]:-none}
+node image   $NODE_IMAGE
+EOF
+    if [[ $MODE == static ]]; then
+      echo "output dir   $OUT_DIR"
+      echo "assets       ${ASSETS[*]:-none}"
+    fi
+    ;;
+
+  eject)
+    $CUSTOM_DOCKERFILE && die "this project already has a Dockerfile"
+    if [[ $MODE == static && -e $PROJECT/nginx.conf ]]; then die "nginx.conf already exists in the project"; fi
+    gen_dockerfile nginx.conf >"$PROJECT/Dockerfile"
+    ok "wrote Dockerfile"
+    if [[ $MODE == static ]]; then gen_nginx_conf >"$PROJECT/nginx.conf"; ok "wrote nginx.conf"; fi
+    if [[ -e $PROJECT/.dockerignore ]]; then
+      grep -qx 'node_modules' "$PROJECT/.dockerignore" || warn ".dockerignore exists but doesn't list node_modules"
+    else
+      gen_dockerignore >"$PROJECT/.dockerignore"
+      ok "wrote .dockerignore"
+    fi
+    ;;
+esac
