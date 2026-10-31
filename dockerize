@@ -143,7 +143,7 @@ case $CMD in
         # installing the file you're running (unless you asked for a particular version), else download one
         if [[ -n $SELF && $REF == main ]]; then cp "$SELF" "$TMP"; else get_copy "$REF" "$TMP"; fi
         mkdir -p "$INSTALL_DIR"
-        chmod +x "$TMP"
+        chmod 755 "$TMP"
         mv "$TMP" "$DEST"
         ok "installed dockerize $(bash "$DEST" version) to $DEST"
         if ! on_path "$INSTALL_DIR"; then
@@ -159,7 +159,7 @@ case $CMD in
         get_copy "$REF" "$TMP"
         NEW="$(bash "$TMP" version)"
         if [[ $NEW == "$VERSION" && $REF == main ]]; then ok "already up to date ($VERSION)"; exit 0; fi
-        chmod +x "$TMP"
+        chmod 755 "$TMP"
         mv "$TMP" "$DEST"
         ok "updated $DEST: $VERSION → $NEW"
         ;;
