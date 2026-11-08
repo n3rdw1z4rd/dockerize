@@ -21,6 +21,11 @@ check "static: named volume prefixed" has "$cfg" 'volumes +demo-static-app-data:
 check "static: --port beats package"  has "$("$D" config -C "$F/static-app" --port 7000)" 'host port +7000'
 check "static: -v adds a volume"      has "$("$D" config -C "$F/static-app" -v /srv/x:/x)" '/srv/x:/x'
 
+T="$(mktemp -d)"; cp -r "$F/static-app/." "$T/"; "$D" eject -C "$T" >/dev/null
+check "static: GIT_COMMIT reaches the build" grep -q 'ENV GIT_COMMIT=\$GIT_COMMIT' "$T/Dockerfile"
+check "static: version.json never cached"   grep -q 'location = /version.json' "$T/nginx.conf"
+rm -rf "$T"
+
 cfg="$("$D" config -C "$F/node-app")"
 check "node: mode detected"           has "$cfg" 'mode +node'
 check "node: app port default"        has "$cfg" 'container +port 3000'

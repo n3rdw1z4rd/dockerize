@@ -13,7 +13,7 @@
 #
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 REPO_RAW="https://raw.githubusercontent.com/n3rdw1z4rd/dockerize"
 LABEL_KEY="dockerize.app"
 
@@ -312,6 +312,11 @@ load_settings() {
     fi
   done
 
+  # The commit the project's at, read here (the build only gets a copy of the files, not .git), and handed to the
+  # build as GIT_COMMIT: e.g. a build that stamps its version with it. Empty without git.
+  GIT_COMMIT=""
+  if have git; then GIT_COMMIT="$(git -C "$PROJECT" rev-parse --short HEAD 2>/dev/null || true)"; fi
+
   CUSTOM_DOCKERFILE=false
   [[ -f $PROJECT/Dockerfile ]] && CUSTOM_DOCKERFILE=true
 
@@ -365,6 +370,8 @@ COPY ${EARLY_FILES[*]} ./
 $YARN_DIR_LINE
 RUN $INSTALL
 COPY . .
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=\$GIT_COMMIT
 RUN $PM run build
 
 FROM nginx:alpine
@@ -385,6 +392,8 @@ COPY ${EARLY_FILES[*]} ./
 $YARN_DIR_LINE
 RUN $INSTALL
 COPY . .
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=\$GIT_COMMIT
 $build_line
 ENV NODE_ENV=production PORT=$APP_PORT
 EXPOSE $APP_PORT
@@ -410,9 +419,13 @@ server {
     try_files $uri $uri/ /index.html;
   }
 
-  # Always re-check index.html so new deploys are picked up immediately
+  # Always re-check index.html (and a version.json, if the app has one) so new deploys are picked up immediately
   location = /index.html {
     add_header Cache-Control "no-cache";
+  }
+  location = /version.json {
+    add_header Cache-Control "no-cache";
+    try_files $uri =404;
   }
 
   # Vite's hashed JS/CSS never change under the same name: cache for a year
@@ -465,7 +478,7 @@ trap cleanup EXIT
 build_image() {
   if $CUSTOM_DOCKERFILE; then
     info "Building $IMAGE from the project's Dockerfile"
-    docker build --label "$LABEL_KEY=$NAME" -t "$IMAGE" "$PROJECT"
+    docker build --label "$LABEL_KEY=$NAME" --build-arg "GIT_COMMIT=$GIT_COMMIT" -t "$IMAGE" "$PROJECT"
   else
     info "Building $IMAGE ($MODE mode)"
     # Build from a clean copy so nothing needs to be added to the project.
@@ -476,7 +489,7 @@ build_image() {
     mkdir -p "$STAGE/.dockerize"
     gen_dockerfile .dockerize/nginx.conf >"$STAGE/.dockerize/Dockerfile"
     if [[ $MODE == static ]]; then gen_nginx_conf >"$STAGE/.dockerize/nginx.conf"; fi
-    docker build --label "$LABEL_KEY=$NAME" -f "$STAGE/.dockerize/Dockerfile" -t "$IMAGE" "$STAGE"
+    docker build --label "$LABEL_KEY=$NAME" --build-arg "GIT_COMMIT=$GIT_COMMIT" -f "$STAGE/.dockerize/Dockerfile" -t "$IMAGE" "$STAGE"
   fi
 }
 
@@ -584,6 +597,7 @@ container    port $CPORT
 network      ${NETWORK:-default}
 volumes      ${VOLUMES[*]:-none}
 node image   $NODE_IMAGE
+git commit   ${GIT_COMMIT:-none (no git)}
 EOF
     if [[ $MODE == static ]]; then
       echo "output dir   $OUT_DIR"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- The project's git commit (read on the host: the build only gets a copy of the files, not `.git`) is passed to the
+  build as `GIT_COMMIT` (`--build-arg`, and `ARG` / `ENV` in the generated Dockerfiles), so a build can stamp its
+  version with it. `config` shows it. Without git, it's empty.
+- Static mode's nginx always re-checks `/version.json`, like `index.html`, so an app's version file is never stale.
+
 ## 1.2.0
 
 - `install`, `self-update` and `uninstall` commands. Install with
