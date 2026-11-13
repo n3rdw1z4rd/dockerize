@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0
+
+- `--env-file PATH` and `"envFile"` in package.json: the container gets the file's variables when it starts, so
+  secrets stay out of the image. In node mode, `.env` and `.env.*` (except `.env.example`) and the named files are
+  then left out of the build. A missing env file stops the deploy.
+- `-e KEY=VALUE` (or `-e KEY` to pass the shell's value through) sets single variables.
+- `config` shows env files and variable names (never values).
+- Without either, behaviour is unchanged; node-mode `deploy` now warns when a `.env` is being copied into the image.
+- Static mode is unchanged (Vite still reads `.env` at build time); env options only warn there.
+
 ## 1.3.0
 
 - The project's git commit (read on the host: the build only gets a copy of the files, not `.git`) is passed to the
