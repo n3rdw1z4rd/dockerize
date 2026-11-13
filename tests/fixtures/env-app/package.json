@@ -1,0 +1,11 @@
+{
+  "name": "env-app",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dockerize": {
+    "port": 6667,
+    "envFile": ".env"
+  }
+}

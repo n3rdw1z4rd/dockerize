@@ -22,6 +22,7 @@ check "static: --port beats package"  has "$("$D" config -C "$F/static-app" --po
 check "static: -v adds a volume"      has "$("$D" config -C "$F/static-app" -v /srv/x:/x)" '/srv/x:/x'
 
 T="$(mktemp -d)"; cp -r "$F/static-app/." "$T/"; "$D" eject -C "$T" >/dev/null
+# shellcheck disable=SC2016 # a literal $GIT_COMMIT is what the Dockerfile should contain
 check "static: GIT_COMMIT reaches the build" grep -q 'ENV GIT_COMMIT=\$GIT_COMMIT' "$T/Dockerfile"
 check "static: version.json never cached"   grep -q 'location = /version.json' "$T/nginx.conf"
 rm -rf "$T"
@@ -33,6 +34,18 @@ check "node: app port default"        has "$cfg" 'container +port 3000'
 cfg="$("$D" config -C "$F/custom-dockerfile")"
 check "custom: uses its Dockerfile"   has "$cfg" "dockerfile +project's own"
 check "custom: port from EXPOSE"      has "$cfg" 'container +port 8080'
+
+cfg="$("$D" config -C "$F/env-app")"
+check "env: envFile from package"     has "$cfg" 'env files +\.env'
+check "env: no vars by default"       has "$cfg" 'env vars +none'
+check "env: --env-file adds a file"   has "$("$D" config -C "$F/env-app" --env-file .env.local)" 'env files +\.env \.env\.local'
+cfg="$("$D" config -C "$F/env-app" -e A=hidden-value -e B)"
+check "env: -e shows names"           has "$cfg" 'env vars +A B'
+check "env: -e never shows values"    bash -c "! grep -q hidden-value <<<'$cfg'"
+check "env: missing file is refused"  bash -c "! '$D' config -C '$F/env-app' --env-file nope.env"
+check "env: bad -e is refused"        bash -c "! '$D' config -C '$F/env-app' -e '1BAD=x'"
+check "env: none set by default"      has "$("$D" config -C "$F/node-app")" 'env files +none'
+check "env: static mode warns"        has "$("$D" config -C "$F/static-app" -e X=1 2>&1)" 'no effect'
 
 check "bad volume is refused"         bash -c "! '$D' config -C '$F/static-app' -v nonsense"
 check "unknown command is refused"    bash -c "! '$D' frobnicate"
