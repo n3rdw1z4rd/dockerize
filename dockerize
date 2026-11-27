@@ -36,7 +36,7 @@ usage() {
   cat <<EOF
 ${BOLD}dockerize${RST} ${VERSION} — build and run any Node project as a Docker container
 
-${BOLD}Usage:${RST} dockerize <command> [options]
+${BOLD}Usage:${RST} dockerize <command> [folder | compose file] [options]
 
 ${BOLD}Commands:${RST}
   deploy     Build the image and (re)start the container
@@ -61,7 +61,10 @@ ${BOLD}Install / update options:${RST}
       --ref REF         Branch or tag to install from (default: main)
 
 ${BOLD}Options:${RST}
-  -C, --dir PATH        Project folder (default: current folder)
+  -C, --dir PATH        Project folder (default: current folder). A folder
+                        after the command does the same (dockerize update
+                        panel), and a compose file there is --compose
+                        (dockerize update panel/docker/compose.example.yml)
   -n, --name NAME       Container/image name (default: package.json "name")
   -p, --port PORT       Host port to publish (default: 5173)
   -m, --mode MODE       static | node (default: auto-detect)
@@ -212,11 +215,12 @@ OPT_DIR="." OPT_NAME="" OPT_PORT="" OPT_MODE="" OPT_APP_PORT="" OPT_OUT_DIR=""
 OPT_NODE="" OPT_NETWORK="" OPT_BIND="" OPT_PUBLISH="" OPT_COMPOSE=""
 OPT_VOLUMES=() OPT_ENV_FILES=() OPT_ENVS=()
 IMAGE_OPTS=() # image options given on the command line (they don't apply to a compose file)
+POSITIONAL=0 OPT_DIR_SET=""
 
 need() { [[ $# -ge 2 && -n $2 ]] || die "$1 needs a value"; }
 while (($#)); do
   case $1 in
-    -C | --dir)    need "$@"; OPT_DIR=$2; shift 2 ;;
+    -C | --dir)    need "$@"; [[ $POSITIONAL == 0 ]] || die "a folder twice: -C $2, and $OPT_DIR"; OPT_DIR=$2; OPT_DIR_SET=1; shift 2 ;;
     -n | --name)   need "$@"; OPT_NAME=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
     -p | --port)   need "$@"; OPT_PORT=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
     -m | --mode)   need "$@"; OPT_MODE=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
@@ -232,7 +236,19 @@ while (($#)); do
     --compose)     need "$@"; OPT_COMPOSE=$2; shift 2 ;;
     --no-compose)  OPT_COMPOSE=false; shift ;;
     -h | --help)   usage; exit 0 ;;
-    *) die "unknown option: $1 (see dockerize --help)" ;;
+    -*) die "unknown option: $1 (see dockerize --help)" ;;
+    *)
+      # a folder (as -C) or a compose file (as --compose, from its own folder), straight after the command
+      ((++POSITIONAL == 1)) || die "one folder (or compose file) at most; got another: $1"
+      if [[ -d $1 ]]; then
+        [[ -z $OPT_DIR_SET ]] || die "a folder twice: $1, and -C $OPT_DIR"
+        OPT_DIR=$1
+      elif [[ -f $1 ]]; then
+        [[ -z $OPT_DIR_SET ]] || die "a compose file and -C together: give one or the other"
+        OPT_DIR="$(dirname "$1")" OPT_COMPOSE="$(basename "$1")"
+      else die "no such folder or file: $1"
+      fi
+      shift ;;
   esac
 done
 

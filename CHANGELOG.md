@@ -9,6 +9,8 @@
   follow. Every service is checked to stay up. No package.json needed. `"compose": false` or `--no-compose` ignores a
   compose file. The project's git commit is passed to compose as `GIT_COMMIT`, for the compose file to use (a build
   arg, say). Image options (`--port`, `-v`, `--env-file`, `-e`, …) are warned about and ignored in compose mode.
+- A folder or compose file straight after the command, so you needn't `cd`: `dockerize update panel` (as `-C panel`),
+  `dockerize update panel/docker/compose.example.yml` (as `--compose`, from that folder).
 - `tests/docker.sh`: the first checks fail the run too (they printed nothing and carried on), and the `status` check
   reads the whole output (`grep -q` cut the pipe short, which `pipefail` counted as a failure).
 

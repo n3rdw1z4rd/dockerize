@@ -63,6 +63,15 @@ check "compose: image options are warned about" has "$("$D" config -C "$F/compos
 check "compose: config shows the git commit"   has "$("$D" config -C "$F/compose-app")" 'git commit +[0-9a-f]{7,}'
 check "compose: -e is warned about too"      has "$("$D" config -C "$F/compose-app" -e X=1 2>&1)" 'ignored with a compose file'
 
+check "path: a folder after the command"        has "$("$D" config "$F/static-app")" 'name +demo-static-app'
+check "path: with options after it"             has "$("$D" config "$F/static-app" --port 7000)" 'host port +7000'
+cfg="$("$D" config "$F/compose-named/docker/compose.example.yml")"
+check "path: a compose file after the command"  has "$cfg" 'compose +compose.example.yml'
+check "path: it runs from the file's folder"    has "$cfg" 'runs in +.*/compose-named/docker$'
+check "path: a missing one is refused"          bash -c "! '$D' config '$F/nope'"
+check "path: two are refused"                   bash -c "! '$D' config '$F/static-app' '$F/node-app'"
+check "path: and -C is refused"                 bash -c "! '$D' config -C '$F/node-app' '$F/static-app'"
+
 check "bad volume is refused"         bash -c "! '$D' config -C '$F/static-app' -v nonsense"
 check "unknown command is refused"    bash -c "! '$D' frobnicate"
 check "version prints"                has "$("$D" version)" '^[0-9]+\.[0-9]+\.[0-9]+$'

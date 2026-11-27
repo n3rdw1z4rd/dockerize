@@ -45,7 +45,8 @@ Or just copy the `dockerize` file anywhere on your `PATH` and `chmod +x` it.
 
 ## Use
 
-Run it from the project folder (or point it at one with `-C path`).
+Run it from the project folder, or name the folder after the command (`dockerize update my-app`, the same as
+`-C my-app`).
 
 | command | what it does |
 | --- | --- |
@@ -138,7 +139,8 @@ or you name it:
 "dockerize": { "compose": "docker/compose.example.yml" }
 ```
 
-(or `--compose FILE`). `"compose": false` or `--no-compose` ignores a compose file, for one that's only for local
+(or `--compose FILE`, or the file's path straight after the command:
+`dockerize update panel/docker/compose.example.yml`). `"compose": false` or `--no-compose` ignores a compose file, for one that's only for local
 development. A compose project needs no `package.json`.
 
 | dockerize | runs |
