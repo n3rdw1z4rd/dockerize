@@ -1,0 +1,4 @@
+# Named in package.json ("compose"), not found by its name.
+services:
+  app:
+    image: nginx:alpine

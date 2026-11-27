@@ -1,0 +1,7 @@
+{
+  "name": "compose-off",
+  "private": true,
+  "scripts": { "build": "vite build" },
+  "devDependencies": { "vite": "*" },
+  "dockerize": { "compose": false }
+}

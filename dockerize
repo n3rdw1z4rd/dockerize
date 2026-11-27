@@ -11,9 +11,13 @@
 # creates is named and labelled after the project, and it never touches
 # containers or images that belong to anything else.
 #
+# A project with a compose file (compose.yaml, compose.yml, docker-compose.yml,
+# or "compose" in package.json) runs through docker compose instead: deploy is
+# `docker compose up -d --build`, and so on.
+#
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 REPO_RAW="https://raw.githubusercontent.com/n3rdw1z4rd/dockerize"
 LABEL_KEY="dockerize.app"
 
@@ -32,7 +36,7 @@ usage() {
   cat <<EOF
 ${BOLD}dockerize${RST} ${VERSION} — build and run any Node project as a Docker container
 
-${BOLD}Usage:${RST} dockerize <command> [options]
+${BOLD}Usage:${RST} dockerize <command> [folder | compose file] [options]
 
 ${BOLD}Commands:${RST}
   deploy     Build the image and (re)start the container
@@ -57,7 +61,10 @@ ${BOLD}Install / update options:${RST}
       --ref REF         Branch or tag to install from (default: main)
 
 ${BOLD}Options:${RST}
-  -C, --dir PATH        Project folder (default: current folder)
+  -C, --dir PATH        Project folder (default: current folder). A folder
+                        after the command does the same (dockerize update
+                        panel), and a compose file there is --compose
+                        (dockerize update panel/docker/compose.example.yml)
   -n, --name NAME       Container/image name (default: package.json "name")
   -p, --port PORT       Host port to publish (default: 5173)
   -m, --mode MODE       static | node (default: auto-detect)
@@ -74,7 +81,29 @@ ${BOLD}Options:${RST}
                         mode, .env files are then kept out of the image
   -e, --env KEY=VALUE   Set a variable in the container (KEY alone passes this
                         shell's value through); repeatable
+      --compose FILE    Run this compose file with docker compose
+      --no-compose      Ignore any compose file; build and run the one image
   -h, --help            Show this help
+
+${BOLD}Compose:${RST} a project with a compose file (compose.yaml, compose.yml,
+docker-compose.yaml or docker-compose.yml in its folder, or the one named by
+"compose" in package.json or --compose) runs through docker compose, from the
+compose file's folder (so its .env and project name are the ones you'd get by
+hand), with the project's git commit as \${GIT_COMMIT} for the compose file to
+use. It needs no package.json, and the image options above (env files and -e
+included: compose has env_file and environment) don't apply:
+
+  deploy, update  docker compose up -d --build, then remove this project's
+                  old images
+  start           docker compose up -d
+  stop            docker compose down (named volumes are kept)
+  restart         docker compose restart
+  logs            docker compose logs -f --tail 100
+  status          docker compose ps -a, and its images
+  clean           docker compose down --rmi local (volumes kept)
+
+  "dockerize": { "compose": "docker/compose.example.yml" }
+  "dockerize": { "compose": false }       (never use a compose file)
 
 Settings can also go in package.json so you don't repeat flags:
 
@@ -85,7 +114,7 @@ Settings can also go in package.json so you don't repeat flags:
   "dockerize": { "envFile": ".env" }
 
 Keys: name, port, mode, appPort, outDir, node, network, bind, publish,
-assets, containerPort, volumes, envFile. Command-line options beat
+assets, containerPort, volumes, envFile, compose. Command-line options beat
 package.json, which beats the defaults; volumes and env files from the command
 line are added to package.json's. Named volumes survive deploy, update and clean.
 EOF
@@ -183,27 +212,43 @@ case $CMD in
 esac
 
 OPT_DIR="." OPT_NAME="" OPT_PORT="" OPT_MODE="" OPT_APP_PORT="" OPT_OUT_DIR=""
-OPT_NODE="" OPT_NETWORK="" OPT_BIND="" OPT_PUBLISH=""
+OPT_NODE="" OPT_NETWORK="" OPT_BIND="" OPT_PUBLISH="" OPT_COMPOSE=""
 OPT_VOLUMES=() OPT_ENV_FILES=() OPT_ENVS=()
+IMAGE_OPTS=() # image options given on the command line (they don't apply to a compose file)
+POSITIONAL=0 OPT_DIR_SET=""
 
 need() { [[ $# -ge 2 && -n $2 ]] || die "$1 needs a value"; }
 while (($#)); do
   case $1 in
-    -C | --dir)    need "$@"; OPT_DIR=$2; shift 2 ;;
-    -n | --name)   need "$@"; OPT_NAME=$2; shift 2 ;;
-    -p | --port)   need "$@"; OPT_PORT=$2; shift 2 ;;
-    -m | --mode)   need "$@"; OPT_MODE=$2; shift 2 ;;
-    --app-port)    need "$@"; OPT_APP_PORT=$2; shift 2 ;;
-    --out-dir)     need "$@"; OPT_OUT_DIR=$2; shift 2 ;;
-    --node)        need "$@"; OPT_NODE=$2; shift 2 ;;
-    --network)     need "$@"; OPT_NETWORK=$2; shift 2 ;;
-    --bind)        need "$@"; OPT_BIND=$2; shift 2 ;;
-    --no-publish)  OPT_PUBLISH=false; shift ;;
-    -v | --volume) need "$@"; OPT_VOLUMES+=("$2"); shift 2 ;;
-    --env-file)    need "$@"; OPT_ENV_FILES+=("$2"); shift 2 ;;
-    -e | --env)    need "$@"; OPT_ENVS+=("$2"); shift 2 ;;
+    -C | --dir)    need "$@"; [[ $POSITIONAL == 0 ]] || die "a folder twice: -C $2, and $OPT_DIR"; OPT_DIR=$2; OPT_DIR_SET=1; shift 2 ;;
+    -n | --name)   need "$@"; OPT_NAME=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    -p | --port)   need "$@"; OPT_PORT=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    -m | --mode)   need "$@"; OPT_MODE=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --app-port)    need "$@"; OPT_APP_PORT=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --out-dir)     need "$@"; OPT_OUT_DIR=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --node)        need "$@"; OPT_NODE=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --network)     need "$@"; OPT_NETWORK=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --bind)        need "$@"; OPT_BIND=$2; IMAGE_OPTS+=("$1"); shift 2 ;;
+    --no-publish)  OPT_PUBLISH=false; IMAGE_OPTS+=("$1"); shift ;;
+    -v | --volume) need "$@"; OPT_VOLUMES+=("$2"); IMAGE_OPTS+=("$1"); shift 2 ;;
+    --env-file)    need "$@"; OPT_ENV_FILES+=("$2"); IMAGE_OPTS+=("$1"); shift 2 ;;
+    -e | --env)    need "$@"; OPT_ENVS+=("$2"); IMAGE_OPTS+=("$1"); shift 2 ;;
+    --compose)     need "$@"; OPT_COMPOSE=$2; shift 2 ;;
+    --no-compose)  OPT_COMPOSE=false; shift ;;
     -h | --help)   usage; exit 0 ;;
-    *) die "unknown option: $1 (see dockerize --help)" ;;
+    -*) die "unknown option: $1 (see dockerize --help)" ;;
+    *)
+      # a folder (as -C) or a compose file (as --compose, from its own folder), straight after the command
+      ((++POSITIONAL == 1)) || die "one folder (or compose file) at most; got another: $1"
+      if [[ -d $1 ]]; then
+        [[ -z $OPT_DIR_SET ]] || die "a folder twice: $1, and -C $OPT_DIR"
+        OPT_DIR=$1
+      elif [[ -f $1 ]]; then
+        [[ -z $OPT_DIR_SET ]] || die "a compose file and -C together: give one or the other"
+        OPT_DIR="$(dirname "$1")" OPT_COMPOSE="$(basename "$1")"
+      else die "no such folder or file: $1"
+      fi
+      shift ;;
   esac
 done
 
@@ -217,16 +262,17 @@ esac
 [[ -d $OPT_DIR ]] || die "no such folder: $OPT_DIR"
 PROJECT="$(cd "$OPT_DIR" && pwd)"
 PKG="$PROJECT/package.json"
-[[ -f $PKG ]] || die "no package.json in $PROJECT"
-
+# (no package.json is fine for a compose project: checked once we know whether it is one)
+JSON=""
 if have node; then JSON=node
 elif have jq; then JSON=jq
-else die "need node or jq to read package.json"
+elif [[ -f $PKG ]]; then die "need node or jq to read package.json"
 fi
 
 # pkg <dotted.path> — print a package.json value ('' if missing).
 # Arrays print one item per line.
 pkg() {
+  [[ -f $PKG ]] || return 0
   if [[ $JSON == node ]]; then
     node -e '
       let v = require(process.argv[1]);
@@ -255,6 +301,137 @@ setting() {
 
 has_dep()    { [[ -n "$(pkg "dependencies.$1")$(pkg "devDependencies.$1")" ]]; }
 has_script() { [[ -n "$(pkg "scripts.$1")" ]]; }
+
+# ------------------------------------------------------------------- compose --
+#
+# A compose file (named with --compose or "compose" in package.json, else one of
+# the standard names in the project folder) means docker compose runs the
+# project. --no-compose, or "compose": false, turns that off.
+
+COMPOSE_FILE=""
+find_compose() {
+  local want=$OPT_COMPOSE f
+  [[ -n $want ]] || want="$(pkg dockerize.compose)"
+  [[ $want == false ]] && return 0
+  if [[ -n $want && $want != true ]]; then
+    [[ $want == /* ]] || want="$PROJECT/$want"
+    [[ -f $want ]] || die "no compose file at $want"
+    COMPOSE_FILE="$(cd "$(dirname "$want")" && pwd)/$(basename "$want")"
+    return 0
+  fi
+  for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [[ -f $PROJECT/$f ]]; then COMPOSE_FILE="$PROJECT/$f"; return 0; fi
+  done
+  if [[ $want == true ]]; then die "\"compose\": true, but there's no compose file in $PROJECT"; fi
+}
+find_compose
+
+if [[ -z $COMPOSE_FILE && ! -f $PKG ]]; then die "no package.json (or compose file) in $PROJECT"; fi
+
+if [[ -n $COMPOSE_FILE ]]; then
+  COMPOSE_DIR="$(dirname "$COMPOSE_FILE")"
+  COMPOSE_BASE="$(basename "$COMPOSE_FILE")"
+  # the project's git commit, for the compose file to use as ${GIT_COMMIT} (e.g. a build arg), as image builds get it
+  COMPOSE_GIT_COMMIT=""
+  if have git; then COMPOSE_GIT_COMMIT="$(git -C "$PROJECT" rev-parse --short HEAD 2>/dev/null || true)"; fi
+  # (from the compose file's folder, as you'd run it by hand: the same project name, and its .env)
+  dc() { (cd "$COMPOSE_DIR" && GIT_COMMIT="${GIT_COMMIT:-$COMPOSE_GIT_COMMIT}" docker compose -f "$COMPOSE_BASE" "$@"); }
+
+  if ((${#IMAGE_OPTS[@]})); then warn "ignored with a compose file (set them in $COMPOSE_BASE): ${IMAGE_OPTS[*]}"; fi
+
+  compose_preflight() {
+    have docker || die "docker is not installed"
+    docker info >/dev/null 2>&1 || die "can't reach the Docker daemon (is it running? are you in the docker group?)"
+    docker compose version >/dev/null 2>&1 || die "docker compose isn't installed (the Compose plugin: docker compose version)"
+    dc config -q || die "$COMPOSE_BASE doesn't check out (see above)"
+  }
+  # the compose project's name (what docker compose calls it), or '' if it can't be read
+  compose_project() {
+    local json
+    json="$(dc config --format json 2>/dev/null)" || return 0
+    if have node; then node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).name??"")}catch{}})' <<<"$json"
+    elif have jq; then jq -r '.name // empty' <<<"$json" 2>/dev/null || true
+    fi
+  }
+  # images this project built that a rebuild left behind (only its own, labelled by compose)
+  compose_prune() {
+    local project
+    project="$(compose_project)"
+    [[ -n $project ]] || return 0
+    docker image prune -f --filter "label=com.docker.compose.project=$project" >/dev/null
+  }
+  # after `up`: every service stays up (or finished cleanly, if it's a one-off)
+  compose_check() {
+    sleep 3
+    local bad
+    bad="$(dc ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | awk '$2 == "restarting" || ($2 == "exited" && $3 != "0") || $2 == "dead" { print $1 " (" $2 ($2 == "exited" ? ", code " $3 : "") ")" }')"
+    if [[ -n $bad ]]; then
+      warn "not staying up: $(tr '\n' ' ' <<<"$bad")"
+      dc logs --tail 30 >&2 || true
+      die "start failed"
+    fi
+  }
+
+  case $CMD in
+    deploy | update)
+      compose_preflight
+      info "Building and starting $COMPOSE_BASE (docker compose up -d --build)"
+      dc up -d --build
+      compose_check
+      compose_prune
+      ok "up: $COMPOSE_BASE"
+      dc ps
+      ;;
+    start)
+      compose_preflight
+      dc up -d
+      compose_check
+      ok "up: $COMPOSE_BASE"
+      ;;
+    stop)
+      compose_preflight
+      dc down
+      ok "stopped: $COMPOSE_BASE (named volumes kept)"
+      ;;
+    restart)
+      compose_preflight
+      dc restart
+      ok "restarted: $COMPOSE_BASE"
+      ;;
+    logs)
+      compose_preflight
+      cd "$COMPOSE_DIR" && GIT_COMMIT="${GIT_COMMIT:-$COMPOSE_GIT_COMMIT}" exec docker compose -f "$COMPOSE_BASE" logs -f --tail 100
+      ;;
+    status)
+      compose_preflight
+      echo "${BOLD}Containers${RST}"
+      dc ps -a
+      echo
+      echo "${BOLD}Images${RST}"
+      dc images
+      ;;
+    clean)
+      compose_preflight
+      dc down --rmi local
+      ok "removed $COMPOSE_BASE's containers and the images it built (volumes kept: remove by hand if you mean it)"
+      ;;
+    config)
+      echo "project      $PROJECT"
+      echo "compose      ${COMPOSE_FILE#"$PROJECT"/}"
+      echo "runs in      $COMPOSE_DIR"
+      echo "git commit   ${GIT_COMMIT:-${COMPOSE_GIT_COMMIT:-none}}"
+      if have docker && docker compose version >/dev/null 2>&1; then
+        services="$(dc config --services 2>/dev/null | tr '\n' ' ')"
+        echo "name         $(compose_project)"
+        echo "services     ${services:-?}"
+      fi
+      ;;
+    eject)
+      die "this project runs from a compose file ($COMPOSE_BASE): there's no generated Dockerfile to eject"
+      ;;
+  esac
+  exit 0
+fi
 
 # ------------------------------------------------------------------ settings --
 

@@ -1,0 +1,4 @@
+# For local development only: "compose": false keeps dockerize away from it.
+services:
+  dev:
+    image: nginx:alpine

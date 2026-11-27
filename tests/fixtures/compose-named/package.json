@@ -1,0 +1,5 @@
+{
+  "name": "compose-named",
+  "private": true,
+  "dockerize": { "compose": "docker/compose.example.yml" }
+}
