@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0
+
+- Compose: a project with a compose file (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`,
+  or the one named by `"compose"` in package.json or `--compose FILE`) runs through `docker compose`, from the compose
+  file's folder: `deploy`/`update` are `up -d --build` (then remove the project's old images, by its compose label),
+  `start` is `up -d`, `stop` is `down`, and `restart`, `logs`, `status`, `clean` (`down --rmi local`) and `config`
+  follow. Every service is checked to stay up. No package.json needed. `"compose": false` or `--no-compose` ignores a
+  compose file. The project's git commit is passed to compose as `GIT_COMMIT`, for the compose file to use (a build
+  arg, say). Image options (`--port`, `-v`, `--env-file`, `-e`, …) are warned about and ignored in compose mode.
+- `tests/docker.sh`: the first checks fail the run too (they printed nothing and carried on), and the `status` check
+  reads the whole output (`grep -q` cut the pipe short, which `pipefail` counted as a failure).
+
 ## 1.4.0
 
 - `--env-file PATH` and `"envFile"` in package.json: the container gets the file's variables when it starts, so

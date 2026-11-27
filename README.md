@@ -11,6 +11,7 @@ dockerize deploy
 - **Node mode** (Express, Fastify, Next, socket.io, …): runs the `build` script if there is one, then `start`.
 - **Your own Dockerfile**: if the project has one, dockerize builds that instead (use it for anything that needs more,
   like two processes in one container).
+- **A compose file**: if the project has one, dockerize runs it with `docker compose` (see [Compose](#compose)).
 
 It needs nothing added to the project. Everything it creates is named and labelled after the project, and it never
 touches containers, images or volumes that belong to anything else.
@@ -127,12 +128,44 @@ end up in the public JavaScript, so never put secrets there. With your own Docke
 - **Builds** run from a clean copy of the project (no `node_modules`, `.git` or old build output), so nothing needs to be
   added to the project. A project Dockerfile builds from the project folder itself, so give it a `.dockerignore`.
 
+### Compose
+
+A project with a compose file runs through `docker compose` instead of a single image. dockerize finds the file by
+its standard name in the project folder (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`),
+or you name it:
+
+```json
+"dockerize": { "compose": "docker/compose.example.yml" }
+```
+
+(or `--compose FILE`). `"compose": false` or `--no-compose` ignores a compose file, for one that's only for local
+development. A compose project needs no `package.json`.
+
+| dockerize | runs |
+|---|---|
+| `deploy`, `update` | `docker compose up -d --build`, then removes this project's old images |
+| `start` | `docker compose up -d` |
+| `stop` | `docker compose down` (named volumes kept) |
+| `restart` | `docker compose restart` |
+| `logs` | `docker compose logs -f --tail 100` |
+| `status` | `docker compose ps -a` and `docker compose images` |
+| `clean` | `docker compose down --rmi local` (volumes kept) |
+| `config` | the compose file, its project name and services |
+
+It runs from the compose file's own folder, exactly as you would by hand, so the project name and the `.env` beside
+the file are the same ones: switching an existing compose project to `dockerize update` picks up the containers
+already running. The project's git commit is passed to compose as `GIT_COMMIT`, so the compose file can use
+`${GIT_COMMIT}` (as a build arg, say). Ports, volumes, networks and environment come from the compose file, so the
+image options (`--port`, `-v`, `--env-file`, `-e`, …) don't apply; dockerize warns if you pass them. After `up`, it checks every service stays up (a one-off service that
+finished cleanly is fine).
+
 ### Safety
 
 - Containers run with `--restart unless-stopped` and are checked a few seconds after starting; if one won't stay up,
   you get its last log lines and a non-zero exit.
 - A port already used by another container (or anything else on the host) stops the deploy before it starts.
-- Everything is labelled `dockerize.app=<name>`; `clean` and image pruning only ever touch that label.
+- Everything is labelled `dockerize.app=<name>`; `clean` and image pruning only ever touch that label. In compose mode,
+  pruning only touches images labelled with the compose project (`com.docker.compose.project=<project>`).
 - Named volumes are never removed by dockerize (`docker volume rm <project>-<name>` if you mean it).
 
 ## Examples
@@ -145,6 +178,7 @@ dockerize deploy -v data:/data               # keep /data across deploys
 dockerize deploy --env-file .env             # secrets reach the container, not the image
 dockerize deploy -e LOG_LEVEL=debug          # one-off variable
 dockerize logs
+dockerize update                             # a compose project: docker compose up -d --build
 ```
 
 ## Develop

@@ -1,0 +1,6 @@
+# A compose project with no package.json: dockerize finds this file by its standard name.
+services:
+  web:
+    build: .
+    ports:
+      - "6668:80"

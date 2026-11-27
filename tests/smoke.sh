@@ -47,6 +47,22 @@ check "env: bad -e is refused"        bash -c "! '$D' config -C '$F/env-app' -e 
 check "env: none set by default"      has "$("$D" config -C "$F/node-app")" 'env files +none'
 check "env: static mode warns"        has "$("$D" config -C "$F/static-app" -e X=1 2>&1)" 'no effect'
 
+cfg="$("$D" config -C "$F/compose-app")"
+check "compose: found by its standard name"     has "$cfg" 'compose +compose.yml'
+check "compose: needs no package.json"          has "$cfg" 'runs in +.*/compose-app$'
+cfg="$("$D" config -C "$F/compose-named")"
+check "compose: named in package.json"          has "$cfg" 'compose +docker/compose.example.yml'
+check "compose: runs from the file's folder"    has "$cfg" 'runs in +.*/compose-named/docker$'
+check "compose: --compose names one"            has "$("$D" config -C "$F/compose-named" --compose docker/compose.example.yml)" 'compose +docker/'
+check "compose: false in package.json"          has "$("$D" config -C "$F/compose-off")" 'mode +static'
+check "compose: --no-compose"                   has "$("$D" config -C "$F/compose-named" --no-compose 2>&1 || true)" 'mode|tell how to run'
+check "compose: a missing file is refused"      bash -c "! '$D' config -C '$F/compose-named' --compose nope.yml"
+check "compose: --no-compose, no package.json"  bash -c "! '$D' config -C '$F/compose-app' --no-compose"
+check "compose: nothing to eject"               bash -c "! '$D' eject -C '$F/compose-app'"
+check "compose: image options are warned about" has "$("$D" config -C "$F/compose-app" --port 7000 2>&1)" 'ignored with a compose file'
+check "compose: config shows the git commit"   has "$("$D" config -C "$F/compose-app")" 'git commit +[0-9a-f]{7,}'
+check "compose: -e is warned about too"      has "$("$D" config -C "$F/compose-app" -e X=1 2>&1)" 'ignored with a compose file'
+
 check "bad volume is refused"         bash -c "! '$D' config -C '$F/static-app' -v nonsense"
 check "unknown command is refused"    bash -c "! '$D' frobnicate"
 check "version prints"                has "$("$D" version)" '^[0-9]+\.[0-9]+\.[0-9]+$'
